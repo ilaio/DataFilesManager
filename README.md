@@ -1,2 +1,3 @@
 # DataFilesManager
-managing data from heavy csv files
+
+Managing data from heavy csv files
