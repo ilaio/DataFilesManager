@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block content %}
+    {% if dir_check.status.value == "not_found" %}
+        <div class="banner banner-warning">{{ dir_check.message }}</div>
+    {% elif dir_check.status.value == "not_readable" %}
+        <div class="banner banner-error">{{ dir_check.message }}</div>
+    {% endif %}
+
+    {% if scan_error %}
+        <div class="banner banner-error">{{ scan_error }}</div>
+    {% endif %}
+
+    {% if files %}
+        <table>
+            <thead>
+                <tr>
+                    <th>File name</th>
+                    <th>Size</th>
+                    <th>Last modified</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for file in files %}
+                    <tr>
+                        <td>{{ file.name }}</td>
+                        <td>{{ file.size_human }}</td>
+                        <td>{{ file.modified_at.strftime("%Y-%m-%d %H:%M") }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% elif dir_check.status.value == "ok" and not scan_error %}
+        <div class="empty-state">
+            No CSV files found. Place <code>.csv</code> files in the <code>data/csv/</code> folder.
+        </div>
+    {% endif %}
+{% endblock %}
+
+{% block footer %}
+    <footer>
+        CSV folder: <code>{{ data_dir }}</code>
+    </footer>
+{% endblock %}
