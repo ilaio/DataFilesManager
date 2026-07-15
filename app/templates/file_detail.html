@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block title %}{{ filename }} — Data Files Manager{% endblock %}
+
+{% block content %}
+    <a class="back-link" href="/">← Back to file list</a>
+
+    <h2 class="page-title">{{ filename }}</h2>
+
+    {% if inspection_error %}
+        <div class="banner banner-error">{{ inspection_error }}</div>
+    {% endif %}
+
+    {% if metadata %}
+        {% if metadata.encoding_warning %}
+            <div class="banner banner-warning">{{ metadata.encoding_warning }}</div>
+        {% endif %}
+
+        <section class="summary-grid">
+            <div class="summary-card">
+                <span class="summary-label">File size</span>
+                <span class="summary-value">{{ metadata.size_human }}</span>
+            </div>
+            <div class="summary-card">
+                <span class="summary-label">Row count</span>
+                <span class="summary-value">{{ "{:,}".format(metadata.row_count) }}</span>
+            </div>
+            <div class="summary-card">
+                <span class="summary-label">Columns</span>
+                <span class="summary-value">{{ metadata.columns | length }}</span>
+            </div>
+            <div class="summary-card">
+                <span class="summary-label">Encoding</span>
+                <span class="summary-value">{{ metadata.encoding }}</span>
+            </div>
+        </section>
+
+        <section class="section-block">
+            <h3>Schema</h3>
+            {% if metadata.columns %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Column name</th>
+                            <th>Type</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for column in metadata.columns %}
+                            <tr>
+                                <td>{{ column.name }}</td>
+                                <td>{{ column.dtype }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% if metadata.inferred_from_sample %}
+                    <p class="footnote">
+                        Types inferred from first {{ "{:,}".format(metadata.sample_size) }} rows.
+                    </p>
+                {% endif %}
+            {% else %}
+                <div class="empty-state">No columns detected. The file may be empty.</div>
+            {% endif %}
+        </section>
+
+        <section class="section-block">
+            <h3>Sample preview</h3>
+            {% if sample and sample.rows %}
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                {% for column in sample.columns %}
+                                    <th>{{ column }}</th>
+                                {% endfor %}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in sample.rows %}
+                                <tr>
+                                    {% for cell in row %}
+                                        <td>{{ cell }}</td>
+                                    {% endfor %}
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="empty-state">No sample rows available.</div>
+            {% endif %}
+        </section>
+    {% endif %}
+{% endblock %}

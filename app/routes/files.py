@@ -1,16 +1,18 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
+from app.services.csv_inspection import CsvInspectionError, get_sample_rows, inspect_csv
 from app.services.file_discovery import (
     DirectoryStatus,
     check_data_directory,
     list_csv_files,
 )
+from app.services.path_utils import CsvFileNotFoundError, resolve_csv_file
 
 logger = logging.getLogger(__name__)
 
@@ -44,5 +46,46 @@ async def list_files(request: Request) -> HTMLResponse:
             "data_dir": str(data_dir),
             "dir_check": dir_check,
             "scan_error": scan_error,
+        },
+    )
+
+
+@router.get("/files/{filename}", response_class=HTMLResponse)
+async def file_detail(request: Request, filename: str) -> HTMLResponse:
+    settings = get_settings()
+    data_dir = settings.csv_data_path
+
+    try:
+        file_path = resolve_csv_file(data_dir, filename)
+    except CsvFileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    metadata = None
+    sample = None
+    inspection_error = None
+
+    try:
+        metadata = inspect_csv(
+            file_path,
+            sample_size=settings.csv_type_inference_sample_size,
+        )
+        sample = get_sample_rows(
+            file_path,
+            sample_size=settings.csv_type_inference_sample_size,
+        )
+    except CsvInspectionError as exc:
+        inspection_error = str(exc)
+    except Exception:
+        logger.exception("Failed to inspect CSV file: %s", file_path)
+        inspection_error = "Unable to analyze this CSV file."
+
+    return templates.TemplateResponse(
+        request,
+        "file_detail.html",
+        {
+            "filename": file_path.name,
+            "metadata": metadata,
+            "sample": sample,
+            "inspection_error": inspection_error,
         },
     )

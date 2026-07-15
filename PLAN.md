@@ -24,12 +24,15 @@ DataFilesManager/
 │   ├── main.py           # FastAPI entry point
 │   ├── config.py         # settings (CSV_DATA_DIR, etc.)
 │   ├── routes/
-│   │   └── files.py      # Stage 1: file list routes
+│   │   └── files.py           # Stage 1–2: list + file detail routes
 │   ├── services/
-│   │   └── file_discovery.py  # Stage 1: scan CSV folder
+│   │   ├── file_discovery.py  # Stage 1: scan CSV folder
+│   │   ├── path_utils.py      # Stage 2: safe filename → path resolution
+│   │   └── csv_inspection.py  # Stage 2: metadata + sample rows via DuckDB
 │   └── templates/
-│       ├── base.html     # shared layout
-│       └── index.html    # Stage 1: file list page
+│       ├── base.html          # shared layout
+│       ├── index.html         # Stage 1: file list page
+│       └── file_detail.html   # Stage 2: file metadata + sample preview
 ├── db/                   # SQLite storage (Stage 4; folder created early)
 ├── PLAN.md               # this file
 ├── requirements.txt
@@ -43,8 +46,9 @@ DataFilesManager/
 |----|----------|-------|
 | C1 | CSV folder location | `data/csv/` inside project; overridable via `.env` |
 | C2 | Supported formats | `.csv` only |
-| C3 | Encoding | UTF-8 default (relevant from Stage 2) |
+| C3 | Encoding | UTF-8 default; fallback to `latin-1` with a visible warning (Stage 2) |
 | C4 | Git ignores | `data/csv/*.csv`, `db/*.db`, `.env` |
+| C5 | Path safety | User-supplied filenames resolved inside `CSV_DATA_DIR` only (Stage 2) |
 
 ---
 
@@ -253,12 +257,242 @@ Add a short "Getting Started" section covering:
 
 ---
 
+## Stage 2 — File metadata and sample preview
+
+**Status:** Implemented
+
+**Goal:** Select a CSV file from the list and view its metadata (size, row count, columns, types) plus a 10-row sample preview.
+
+**Builds on:** Stage 1 file list, `CSV_DATA_DIR` config, existing templates and error-banner patterns.
+
+### Design decisions (proposed defaults)
+
+| Topic | Decision | Rationale |
+|-------|----------|-----------|
+| CSV engine | DuckDB `read_csv_auto` | Approved stack; reads CSVs efficiently without loading full file into app memory |
+| Row count | Full-file `COUNT(*)` via DuckDB | Accurate (handles quoted newlines); may take seconds on very large files |
+| Type inference | Sample first 10,000 rows | Fast on large files; UI notes types are *"inferred from sample"* |
+| Sample rows | First 10 data rows | Matches original spec |
+| Encoding | UTF-8 first; fallback to `latin-1` | Matches cross-cutting decision C3; show warning if fallback used |
+| Loading UX | Synchronous request with *"Analyzing…"* page state | Simple for local tool; async/HTMX polling deferred unless needed |
+| Invalid filename | HTTP 404 | No path traversal; no leaking of folder contents |
+
+---
+
+### Sub-tasks
+
+#### 2.1 — Add DuckDB dependency
+
+**File:** `requirements.txt`
+
+Add:
+
+```
+duckdb
+```
+
+**Command (run by user after approval):**
+
+```bash
+pip install duckdb
+```
+
+---
+
+#### 2.2 — Safe file path resolution
+
+**File:** `app/services/path_utils.py`
+
+**Function:** `resolve_csv_file(data_dir: Path, filename: str) -> Path`
+
+**Rules:**
+
+- Reject empty filenames
+- Reject filenames containing `/`, `\`, or `..`
+- Reject filenames not ending in `.csv` (case-insensitive)
+- Resolve `data_dir / filename` and verify the result is still inside `data_dir` (use `.resolve()` + `is_relative_to()`)
+- Verify the file exists and is a regular file
+- Raise a dedicated exception (e.g. `FileNotFoundError` or custom `CsvFileNotFoundError`) for the route to map to 404
+
+**Reuse:** Called by both the detail route and `csv_inspection` service.
+
+---
+
+#### 2.3 — CSV inspection service
+
+**File:** `app/services/csv_inspection.py`
+
+**Dataclasses:**
+
+| Class | Fields |
+|-------|--------|
+| `ColumnInfo` | `name: str`, `dtype: str` |
+| `FileMetadata` | `name: str`, `path: Path`, `size_bytes: int`, `size_human: str`, `row_count: int`, `columns: list[ColumnInfo]`, `encoding: str`, `encoding_warning: str \| None`, `inferred_from_sample: bool` |
+| `SamplePreview` | `columns: list[str]`, `rows: list[list[str]]` (max 10 rows; cell values as display strings) |
+
+**Function:** `inspect_csv(file_path: Path, *, sample_size: int = 10_000) -> FileMetadata`
+
+**Behavior:**
+
+1. Read `size_bytes` / `size_human` via `stat()` (reuse `_format_size` — extract to shared helper or import from `file_discovery`)
+2. Open an in-memory DuckDB connection
+3. Attempt read with UTF-8 encoding
+4. On encoding failure, retry with `latin-1` and set `encoding_warning`
+5. Query row count: `SELECT COUNT(*) FROM read_csv_auto(?, sample_size=?)`
+6. Query schema: `DESCRIBE SELECT * FROM read_csv_auto(?, sample_size=?)` → map DuckDB types to display labels (e.g. `VARCHAR` → `string`, `BIGINT` → `integer`, `DOUBLE` → `float`, `BOOLEAN` → `boolean`, `DATE` → `date`, `TIMESTAMP` → `datetime`)
+7. Set `inferred_from_sample=True` when file has more rows than `sample_size` (or always `True` with note — see open question below)
+
+**Function:** `get_sample_rows(file_path: Path, *, limit: int = 10, sample_size: int = 10_000) -> SamplePreview`
+
+**Behavior:**
+
+- `SELECT * FROM read_csv_auto(?, sample_size=?) LIMIT 10`
+- Convert all cell values to strings for template rendering (`None` → empty string or `"null"` — pick `""` for cleaner display)
+- Return column names + row matrix
+
+**Error handling:**
+
+- DuckDB parse errors → raise `CsvInspectionError` with user-friendly message
+- Empty file or header-only file → return `row_count=0`, empty columns/rows with clear metadata (not a crash)
+
+---
+
+#### 2.4 — Config extension (optional settings)
+
+**File:** `app/config.py`
+
+Add optional setting:
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `csv_type_inference_sample_size` | `10000` | Rows DuckDB samples for type inference |
+
+**File:** `.env.example`
+
+```
+CSV_TYPE_INFERENCE_SAMPLE_SIZE=10000
+```
+
+---
+
+#### 2.5 — File detail route
+
+**File:** `app/routes/files.py`
+
+**New endpoint:**
+
+| Method | Path | Response |
+|--------|------|----------|
+| `GET` | `/files/{filename}` | HTML file detail page |
+
+**Route behavior:**
+
+1. Resolve safe path via `resolve_csv_file()` → 404 if invalid
+2. Call `inspect_csv()` and `get_sample_rows()`
+3. On `CsvInspectionError` → render detail page with error banner (not a 500)
+4. Pass metadata + sample to `file_detail.html`
+
+**Stage 1 update in same file:**
+
+- No changes to `GET /` logic beyond linking filenames in the template
+
+---
+
+#### 2.6 — File detail UI
+
+**File:** `app/templates/file_detail.html`
+
+**Sections:**
+
+1. **Breadcrumb / back link** — `← Back to file list` linking to `/`
+2. **Summary cards** (or definition list) showing:
+   - File name
+   - File size (human-readable)
+   - Row count (formatted with thousands separator)
+   - Encoding (+ warning banner if fallback was used)
+3. **Schema table** — columns: `Column name`, `Type`
+   - Footnote if `inferred_from_sample`: *"Types inferred from first N rows"*
+4. **Sample preview table** — first 10 rows, all columns
+   - Horizontal scroll if many columns
+5. **Error banner** — malformed/unreadable CSV message when inspection fails
+
+**File:** `app/templates/index.html` (update)
+
+- Wrap filename in `<a href="/files/{{ file.name }}">` (URL-encode filename if needed — use `urlencode` filter or `path` helper)
+
+**File:** `app/templates/base.html` (minor update)
+
+- Add styles for summary cards, schema table, sample table, breadcrumb link
+- Reuse existing `.banner`, `table`, `.empty-state` patterns
+
+---
+
+#### 2.7 — Error handling
+
+| Condition | Behavior |
+|-----------|----------|
+| Filename contains `..` or path separators | HTTP 404 |
+| File not in `CSV_DATA_DIR` | HTTP 404 |
+| File does not exist | HTTP 404 |
+| Non-`.csv` extension | HTTP 404 |
+| DuckDB cannot parse CSV | Error banner on detail page with message |
+| Empty CSV file | Show zero rows, empty schema/sample with explanatory text |
+| Encoding fallback used | Warning banner: *"UTF-8 decode failed; read as latin-1"* |
+| Unexpected error | Log exception; generic error banner (no stack trace to user) |
+
+**Security:**
+
+- Never pass user input directly as a filesystem path
+- Only the basename is accepted; always resolved under `CSV_DATA_DIR`
+
+---
+
+### Acceptance criteria
+
+- [ ] Clicking a filename on the home page opens `/files/{filename}`
+- [ ] Detail page shows file size, row count, column names, and column types
+- [ ] Detail page shows a 10-row sample with values
+- [ ] Types note indicates they were inferred from a sample (when applicable)
+- [ ] Invalid or non-existent filenames return 404
+- [ ] Malformed CSV shows a clear error (app does not crash)
+- [ ] Large CSV (e.g. 100 MB+) completes inspection without loading entire file into Python memory
+- [ ] `← Back to file list` returns to home page
+- [ ] Non-CSV files remain inaccessible via URL manipulation
+
+---
+
+### Commands (run by user)
+
+```bash
+# 1. Install new dependency (with venv active)
+pip install duckdb
+
+# 2. Restart the dev server
+uvicorn app.main:app --reload
+
+# 3. Open a file detail page
+open http://127.0.0.1:8000/files/sample.csv
+```
+
+---
+
+### Open questions (confirm before implementation)
+
+| # | Question | Recommendation |
+|---|----------|----------------|
+| Q1 | Row count on very large files may take several seconds — acceptable for Stage 2? | Yes; show file name immediately, add *"Analyzing…"* note in template title area or a simple loading message before heavy query completes |
+| Q2 | Always show *"inferred from sample"* note, or only when `row_count > sample_size`? | Only when file exceeds sample size |
+| Q3 | `null` values in sample — display as empty cell or literal `"null"`? | Empty cell |
+| Q4 | Delimiter auto-detection via DuckDB default — OK for Stage 2? | Yes (DuckDB handles `,`, `;`, tabs in many cases) |
+
+---
+
 ## Future stages (placeholder)
 
 The following stages are approved at a high level but not yet detailed in this file. They will be added here before each implementation phase.
 
 | Stage | Goal | Status |
 |-------|------|--------|
-| 2 | File metadata and 10-row sample preview | Pending detail |
+| 2 | File metadata and 10-row sample preview | Implemented |
 | 3 | Paginated full content viewer | Pending detail |
 | 4 | Column manipulation and SQLite import | Pending detail |
