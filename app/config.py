@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     )
 
     csv_data_dir: str = "data/csv"
+    csv_type_inference_sample_size: int = 10_000
 
     @property
     def csv_data_path(self) -> Path:

@@ -23,7 +23,7 @@
             <tbody>
                 {% for file in files %}
                     <tr>
-                        <td>{{ file.name }}</td>
+                        <td><a href="/files/{{ file.name | urlencode }}">{{ file.name }}</a></td>
                         <td>{{ file.size_human }}</td>
                         <td>{{ file.modified_at.strftime("%Y-%m-%d %H:%M") }}</td>
                     </tr>
