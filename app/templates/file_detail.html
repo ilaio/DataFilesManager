@@ -90,6 +90,12 @@
             {% else %}
                 <div class="empty-state">No sample rows available.</div>
             {% endif %}
+
+            {% if not inspection_error %}
+                <p class="browse-link-wrap">
+                    <a class="action-link" href="/files/{{ filename | urlencode }}/browse">Browse all rows →</a>
+                </p>
+            {% endif %}
         </section>
     {% endif %}
 {% endblock %}

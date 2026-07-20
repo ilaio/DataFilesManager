@@ -59,6 +59,12 @@ class SamplePreview:
     rows: list[list[str]]
 
 
+@dataclass
+class CsvReadContext:
+    encoding: str
+    encoding_warning: str | None
+
+
 def _display_type(duckdb_type: str) -> str:
     normalized = duckdb_type.upper()
     return DUCKDB_TYPE_LABELS.get(normalized, duckdb_type.lower())
@@ -115,6 +121,26 @@ def _resolve_encoding(
     raise CsvInspectionError(
         f"Unable to read CSV file: {last_error}"
     ) from last_error
+
+
+def get_csv_read_context(
+    file_path: Path,
+    *,
+    sample_size: int = 10_000,
+) -> CsvReadContext:
+    if file_path.stat().st_size == 0:
+        return CsvReadContext(encoding="UTF-8", encoding_warning=None)
+
+    conn = duckdb.connect()
+
+    try:
+        encoding, encoding_warning = _resolve_encoding(conn, file_path, sample_size)
+        return CsvReadContext(
+            encoding=encoding,
+            encoding_warning=encoding_warning,
+        )
+    finally:
+        conn.close()
 
 
 def inspect_csv(file_path: Path, *, sample_size: int = 10_000) -> FileMetadata:

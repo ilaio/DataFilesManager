@@ -24,15 +24,18 @@ DataFilesManager/
 │   ├── main.py           # FastAPI entry point
 │   ├── config.py         # settings (CSV_DATA_DIR, etc.)
 │   ├── routes/
-│   │   └── files.py           # Stage 1–2: list + file detail routes
+│   │   └── files.py           # Stage 1–3: list, detail, and browse routes
 │   ├── services/
 │   │   ├── file_discovery.py  # Stage 1: scan CSV folder
+│   │   ├── formatting.py      # Shared formatting helpers
 │   │   ├── path_utils.py      # Stage 2: safe filename → path resolution
-│   │   └── csv_inspection.py  # Stage 2: metadata + sample rows via DuckDB
+│   │   ├── csv_inspection.py  # Stage 2: metadata + sample rows via DuckDB
+│   │   └── csv_pagination.py  # Stage 3: paginated row reads via DuckDB
 │   └── templates/
 │       ├── base.html          # shared layout
 │       ├── index.html         # Stage 1: file list page
-│       └── file_detail.html   # Stage 2: file metadata + sample preview
+│       ├── file_detail.html   # Stage 2: file metadata + sample preview
+│       └── file_browse.html   # Stage 3: paginated content viewer
 ├── db/                   # SQLite storage (Stage 4; folder created early)
 ├── PLAN.md               # this file
 ├── requirements.txt
@@ -487,6 +490,259 @@ open http://127.0.0.1:8000/files/sample.csv
 
 ---
 
+## Stage 3 — Paginated full content viewer
+
+**Status:** Implemented
+
+**Goal:** Browse the full contents of a selected CSV file page by page, without loading the entire file into memory.
+
+**Builds on:** Stage 2 file detail page, `path_utils`, DuckDB `read_csv_auto`, encoding fallback (C3), and existing table/banner UI patterns.
+
+### Design decisions (proposed defaults)
+
+| Topic | Decision | Rationale |
+|-------|----------|-----------|
+| Browse URL | `GET /files/{filename}/browse?page=1&page_size=50` | RESTful, bookmarkable, consistent with existing `/files/{filename}` route |
+| Pagination query | DuckDB `LIMIT` + `OFFSET` on `read_csv_auto` | Matches approved stack; only fetches the rows needed for the current page |
+| Default page size | `50` | Balanced for wide tables and screen space |
+| Page size options | `25`, `50`, `100` | Matches original spec; validated server-side |
+| Total row count | Reuse `inspect_csv()` row count on browse page load | Accurate count already implemented in Stage 2; avoids new counting logic |
+| Encoding | Reuse existing UTF-8 → `latin-1` fallback | Consistent reads across detail and browse views |
+| Navigation UX | Full page reload via query params | Consistent with Stages 1–2; HTMX partial updates deferred |
+| Page controls | Previous / Next + page indicator | Simple and sufficient for v1 |
+| Row numbers | Show absolute row number as first column | Helps orient user within large files |
+| Table header | Sticky header on vertical scroll | Improves readability for wide/long pages |
+| Sortable columns | Deferred | Out of scope for Stage 3 v1 |
+| Invalid `page` | Clamp to valid range (`1` … `total_pages`) | Better UX than error page when user bookmarks an out-of-range page |
+| Invalid `page_size` | Fall back to default (`50`) | Ignore unsupported values silently |
+
+**Known limitation:** DuckDB `OFFSET` on CSV files may scan skipped rows, so very deep pages (e.g. page 10,000) can be slower. Acceptable for Stage 3 local use; can optimize later (e.g. cached DuckDB table).
+
+---
+
+### Sub-tasks
+
+#### 3.1 — Shared CSV read helpers (light refactor)
+
+**File:** `app/services/csv_inspection.py` (update)
+
+Extract reusable internals so pagination does not duplicate encoding logic:
+
+| Helper | Purpose |
+|--------|---------|
+| `_resolve_encoding(...)` | Already exists — keep as shared internal |
+| `_format_cell(...)` | Already exists — reuse for paginated rows |
+| `get_csv_read_context(file_path, sample_size)` *(new, optional)* | Returns resolved `encoding` + `encoding_warning` in one DuckDB connection |
+
+**Goal:** `csv_pagination.py` reuses the same encoding fallback behavior as Stage 2 without copy-paste.
+
+> Full inspection/pagination merge (single DuckDB connection) remains a future optimization — not required for Stage 3.
+
+---
+
+#### 3.2 — Pagination service
+
+**File:** `app/services/csv_pagination.py`
+
+**Dataclass:** `PaginatedRows`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `columns` | `list[str]` | Column headers |
+| `rows` | `list[list[str]]` | Cell values as display strings (same rules as Stage 2 sample) |
+| `page` | `int` | Current page (1-based) |
+| `page_size` | `int` | Rows per page |
+| `total_rows` | `int` | Total data rows in file |
+| `total_pages` | `int` | `ceil(total_rows / page_size)`, minimum `1` when `total_rows == 0` |
+| `start_row` | `int` | Absolute index of first row on page (1-based; `0` when empty) |
+| `end_row` | `int` | Absolute index of last row on page (`0` when empty) |
+| `encoding` | `str` | Encoding used for read |
+| `encoding_warning` | `str \| None` | Set when `latin-1` fallback is used |
+
+**Function:** `get_paginated_rows(file_path: Path, *, page: int, page_size: int, sample_size: int, total_rows: int | None = None) -> PaginatedRows`
+
+**Behavior:**
+
+1. Validate and normalize `page` and `page_size`
+2. If `total_rows` not provided, obtain via `inspect_csv()` (or a lighter count helper)
+3. Compute `offset = (page - 1) * page_size`
+4. Open DuckDB connection; resolve encoding (reuse Stage 2 helper)
+5. Query:
+
+   ```sql
+   SELECT *
+   FROM read_csv_auto(?, sample_size=?, encoding=?)
+   LIMIT ? OFFSET ?
+   ```
+
+6. Format cells with `_format_cell`
+7. Compute `start_row`, `end_row`, `total_pages`
+8. Return `PaginatedRows`
+
+**Edge cases:**
+
+| Case | Behavior |
+|------|----------|
+| Empty file | `total_rows=0`, empty table, `total_pages=1`, empty-state message |
+| `page` beyond last page | Clamp to last page |
+| `page` < 1 | Clamp to `1` |
+| `page_size` not in allowed set | Use default `50` |
+| Parse error | Raise `CsvInspectionError` (reuse existing exception) |
+
+---
+
+#### 3.3 — Config extension
+
+**File:** `app/config.py`
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `csv_default_page_size` | `50` | Default rows per page |
+| `csv_page_size_options` | `[25, 50, 100]` | Allowed page sizes (can be a constant in code instead of env) |
+
+**File:** `.env.example` (optional)
+
+```
+CSV_DEFAULT_PAGE_SIZE=50
+```
+
+---
+
+#### 3.4 — Browse route
+
+**File:** `app/routes/files.py`
+
+**New endpoint:**
+
+| Method | Path | Response |
+|--------|------|----------|
+| `GET` | `/files/{filename}/browse` | HTML paginated content page |
+
+**Query parameters:**
+
+| Param | Type | Default | Rules |
+|-------|------|---------|-------|
+| `page` | int | `1` | Clamp to valid range |
+| `page_size` | int | `50` | Must be one of `25`, `50`, `100` |
+
+**Route behavior:**
+
+1. Resolve safe path via `resolve_csv_file()` → 404 if invalid
+2. Parse and validate `page` / `page_size` query params
+3. Call `get_paginated_rows()` (pass `settings.csv_type_inference_sample_size`)
+4. On `CsvInspectionError` → render browse page with error banner
+5. Pass pagination data to `file_browse.html`
+
+---
+
+#### 3.5 — Browse UI
+
+**File:** `app/templates/file_browse.html`
+
+**Sections:**
+
+1. **Breadcrumb** — `← Back to file details` → `/files/{filename}`
+2. **Page title** — filename + "Browse rows"
+3. **Encoding warning banner** — if `latin-1` fallback used
+4. **Pagination summary** — e.g. *"Rows 51–100 of 12,345"* and *"Page 2 of 247"*
+5. **Page size selector** — `<select>` or button group for 25 / 50 / 100 (submits via GET, resets to page 1 on change)
+6. **Data table** — sticky header, horizontal scroll for many columns
+   - First column: row number (`start_row` + loop index)
+   - Remaining columns: CSV values
+7. **Pagination controls** — `← Previous` | `Next →` (disabled when at first/last page)
+8. **Empty state** — when file has no rows
+9. **Error banner** — when CSV cannot be read
+
+**File:** `app/templates/file_detail.html` (update)
+
+- Add action link below sample preview: **"Browse all rows →"** linking to `/files/{filename}/browse`
+
+**File:** `app/templates/base.html` (update)
+
+- Add styles for pagination bar, page-size selector, disabled nav buttons, sticky `thead`, row-number column
+
+---
+
+#### 3.6 — Query param helpers
+
+**File:** `app/routes/files.py` or `app/services/csv_pagination.py`
+
+**Functions:**
+
+| Function | Purpose |
+|----------|---------|
+| `normalize_page(page: int, total_pages: int) -> int` | Clamp page to `1 … total_pages` |
+| `normalize_page_size(page_size: int, allowed: list[int], default: int) -> int` | Return valid page size |
+
+Keeps validation logic out of the template and route body.
+
+---
+
+#### 3.7 — Error handling
+
+| Condition | Behavior |
+|-----------|----------|
+| Invalid / missing filename | HTTP 404 |
+| `page=0` or negative | Clamp to `1` |
+| `page` > `total_pages` | Clamp to `total_pages` |
+| `page_size=999` | Fall back to default `50` |
+| Empty CSV | Empty-state message; pagination shows *"Rows 0 of 0"* |
+| DuckDB parse error | Error banner on browse page (no 500) |
+| Encoding fallback | Warning banner (same message as Stage 2) |
+| Unexpected error | Log exception; generic error banner |
+
+**Security:**
+
+- Reuse `resolve_csv_file()` — no new path traversal surface
+- Query params affect only `LIMIT`/`OFFSET` integers, not file paths
+
+---
+
+### Acceptance criteria
+
+- [ ] File detail page links to browse view ("Browse all rows")
+- [ ] Browse page shows CSV content paginated (default 50 rows per page)
+- [ ] User can switch page size between 25, 50, and 100
+- [ ] Previous / Next navigation works and disables at boundaries
+- [ ] Page indicator shows current page, total pages, and row range
+- [ ] Row numbers are visible in the first column
+- [ ] Table header stays visible on vertical scroll (sticky)
+- [ ] Empty file shows a clear empty state
+- [ ] Invalid filenames return 404
+- [ ] Malformed CSV shows an error banner (app does not crash)
+- [ ] Browsing a large file does not load the entire file into Python memory
+- [ ] `← Back to file details` returns to the Stage 2 detail page
+
+---
+
+### Commands (run by user)
+
+```bash
+# 1. Restart the dev server (no new dependencies expected)
+uvicorn app.main:app --reload
+
+# 2. Open a file detail page, then click "Browse all rows"
+open http://127.0.0.1:8000/files/sample.csv
+
+# 3. Or go directly to browse view
+open "http://127.0.0.1:8000/files/sample.csv/browse?page=1&page_size=50"
+```
+
+---
+
+### Open questions (confirm before implementation)
+
+| # | Question | Recommendation |
+|---|----------|----------------|
+| Q1 | Default page size of 50 OK? | Yes |
+| Q2 | Prev/Next only for v1, or include jump-to-page input? | Prev/Next only for v1 |
+| Q3 | Full page reload OK, or use HTMX for in-place table swap? | Full page reload (consistent with Stages 1–2) |
+| Q4 | Show row number column? | Yes |
+| Q5 | On browse page load, call `inspect_csv()` for `total_rows` (accurate but may be slow on first load)? | Yes for v1; caching optimization deferred |
+| Q6 | Include First/Last page buttons in addition to Prev/Next? | Optional nice-to-have; Prev/Next sufficient for v1 |
+
+---
+
 ## Future stages (placeholder)
 
 The following stages are approved at a high level but not yet detailed in this file. They will be added here before each implementation phase.
@@ -494,5 +750,5 @@ The following stages are approved at a high level but not yet detailed in this f
 | Stage | Goal | Status |
 |-------|------|--------|
 | 2 | File metadata and 10-row sample preview | Implemented |
-| 3 | Paginated full content viewer | Pending detail |
+| 3 | Paginated full content viewer | Implemented |
 | 4 | Column manipulation and SQLite import | Pending detail |

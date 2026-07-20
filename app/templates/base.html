@@ -35,6 +35,10 @@
             padding: 0 1rem;
         }
 
+        main.main-browse {
+            max-width: 1200px;
+        }
+
         footer {
             max-width: 960px;
             margin: 2rem auto;
@@ -118,6 +122,12 @@
             font-weight: 600;
         }
 
+        .page-subtitle {
+            font-size: 1rem;
+            font-weight: 500;
+            color: #64748b;
+        }
+
         .summary-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -173,6 +183,81 @@
             box-shadow: none;
             border-radius: 0;
         }
+
+        .table-scroll-sticky {
+            max-height: 70vh;
+            overflow: auto;
+        }
+
+        .table-scroll-sticky thead th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+
+        .col-row-num {
+            color: #64748b;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+            width: 1%;
+        }
+
+        .browse-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .pagination-summary {
+            font-size: 0.875rem;
+            color: #475569;
+        }
+
+        .summary-separator {
+            margin: 0 0.35rem;
+        }
+
+        .page-size-form {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .page-size-form select {
+            padding: 0.35rem 0.5rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            background: #fff;
+        }
+
+        .pagination-controls {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+
+        .pagination-link {
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .nav-disabled {
+            color: #94a3b8;
+            cursor: not-allowed;
+            text-decoration: none;
+        }
+
+        .action-link {
+            font-weight: 500;
+        }
+
+        .browse-link-wrap {
+            margin: 1rem 0 0;
+        }
     </style>
 </head>
 <body>
@@ -180,7 +265,7 @@
         <h1>Data Files Manager</h1>
     </header>
 
-    <main>
+    <main class="{% block main_class %}{% endblock %}">
         {% block content %}{% endblock %}
     </main>
 
