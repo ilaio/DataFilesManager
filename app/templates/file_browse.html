@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}{{ filename }} — Browse rows{% endblock %}
+
+{% block main_class %}main-browse{% endblock %}
+
+{% block content %}
+    <a class="back-link" href="/files/{{ filename | urlencode }}">← Back to file details</a>
+
+    <h2 class="page-title">{{ filename }} <span class="page-subtitle">Browse rows</span></h2>
+
+    {% if browse_error %}
+        <div class="banner banner-error">{{ browse_error }}</div>
+    {% endif %}
+
+    {% if pagination %}
+        {% if pagination.encoding_warning %}
+            <div class="banner banner-warning">{{ pagination.encoding_warning }}</div>
+        {% endif %}
+
+        <div class="browse-toolbar">
+            <div class="pagination-summary">
+                {% if pagination.total_rows > 0 %}
+                    <span>Rows {{ "{:,}".format(pagination.start_row) }}–{{ "{:,}".format(pagination.end_row) }} of {{ "{:,}".format(pagination.total_rows) }}</span>
+                    <span class="summary-separator">·</span>
+                {% else %}
+                    <span>Rows 0 of 0</span>
+                    <span class="summary-separator">·</span>
+                {% endif %}
+                <span>Page {{ pagination.page }} of {{ pagination.total_pages }}</span>
+            </div>
+
+            <form class="page-size-form" method="get">
+                <label for="page_size">Rows per page</label>
+                <select name="page_size" id="page_size" onchange="this.form.submit()">
+                    {% for size in page_size_options %}
+                        <option value="{{ size }}" {% if size == pagination.page_size %}selected{% endif %}>{{ size }}</option>
+                    {% endfor %}
+                </select>
+                <input type="hidden" name="page" value="1">
+            </form>
+        </div>
+
+        {% if pagination.rows %}
+            <div class="table-scroll table-scroll-sticky">
+                <table>
+                    <thead>
+                        <tr>
+                            <th class="col-row-num">#</th>
+                            {% for column in pagination.columns %}
+                                <th>{{ column }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in pagination.rows %}
+                            <tr>
+                                <td class="col-row-num">{{ pagination.start_row + loop.index0 }}</td>
+                                {% for cell in row %}
+                                    <td>{{ cell }}</td>
+                                {% endfor %}
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div class="empty-state">No rows found in this file.</div>
+        {% endif %}
+
+        <div class="pagination-controls">
+            {% if pagination.page > 1 %}
+                <a class="pagination-link" href="/files/{{ filename | urlencode }}/browse?page={{ pagination.page - 1 }}&amp;page_size={{ pagination.page_size }}">← Previous</a>
+            {% else %}
+                <span class="pagination-link nav-disabled">← Previous</span>
+            {% endif %}
+
+            {% if pagination.page < pagination.total_pages %}
+                <a class="pagination-link" href="/files/{{ filename | urlencode }}/browse?page={{ pagination.page + 1 }}&amp;page_size={{ pagination.page_size }}">Next →</a>
+            {% else %}
+                <span class="pagination-link nav-disabled">Next →</span>
+            {% endif %}
+        </div>
+    {% endif %}
+{% endblock %}
